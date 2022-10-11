@@ -1,0 +1,293 @@
+#########################################################
+#This script is the R computing part of my Econ 910 final project
+#Fall 2020
+#Jehu Mette
+#The main objective is assessing the impact of increased ethanol comsumption of the NAFTA countries food prices
+#The central method is a non linear VAR model.
+##########################################################
+
+library(tstools)
+library(vars)
+
+######R Original Data ####
+data<- read.csv("data_project_910.csv", header = TRUE)
+data[1:10,]
+
+
+##Creating the Time Series###
+
+colnames(data)
+
+ppi_corn <- ts(data$ppi_corn_us, start=c(1975,1), frequency=12 )
+bio_share <- ts(data$biomassshare, start=c(1975,1), frequency=12 )
+rcpi_us_food <- ts(data$rcpi_us_food, start=c(1975,1), frequency=12 )
+rcpi_can_food <- ts(data$rcpi_can_food, start=c(1975,1), frequency=12 )
+
+
+
+##Making the plots##
+plot(ppi_corn, main="Producers price index of American corn farmers", xlab="Year", ylab="PPI U.S.")
+plot(bio_share, main="Biomass share of primary energy consumption in the U.S.", xlab="Year", ylab="Share")
+plot(rcpi_us_food, main="Real Food Consumer Price Index in the U.S.", xlab="Year", ylab="Real U.S. Food Prices")
+plot(rcpi_can_food, main="Real Food Consumer Price Index in Canada", xlab="Year", ylab="Real Canada Food Prices")
+
+##Augmented Dickey Fuller Tests
+
+bio1 <- na.omit(bio_share)
+ppi1 <- na.omit(ppi_corn)
+us1 <- na.omit(rcpi_us_food)
+can1 <- na.omit(rcpi_can_food)
+
+
+#1. test
+bio1.df<-ur.df(y=bio1, type="trend", selectlags="AIC")
+summary(bio1.df)
+ppi1.df<-ur.df(y=ppi1, type="trend", selectlags="AIC")
+summary(ppi1.df)
+us1.df<-ur.df(y=us1, type="trend", selectlags="AIC")
+summary(us1.df)
+can1.df<-ur.df(y=can1, type="trend", selectlags="AIC")
+summary(can1.df)
+
+
+
+
+#Variables Transformation#
+
+ppi_diff<-pctChange(ppi_corn)
+ts.plot(ppi_diff, main="First differenced PPI", xlab="Year", ylab="Differenced PPI ");abline(h=0)
+
+bio_diff<-pctChange(bio_share)
+ts.plot(bio_diff, main="First differenced biomass share", xlab="Year", ylab="Differenced biomass share of energy consumption");abline(h=0)
+
+us_food_diff<-pctChange(rcpi_us_food)
+ts.plot(us_food_diff, main="First differenced U.S. food real CPI", xlab="Year", ylab="Differenced U.S. food CPI ");abline(h=0)
+
+can_food_diff<-pctChange(rcpi_can_food)
+ts.plot(can_food_diff, main="First differenced Canada food real CPI", xlab="Year", ylab="Differenced Canada food CPI ");abline(h=0)
+
+#Non Linear VAR 
+
+#Create the time dummy
+data$d_2005 <- data$ppi*0
+data$d_2005[366:546]<- 1
+
+d_2005 <- ts(data$d_2005, start=c(1975,1), frequency=12 )
+
+#For the US first
+
+rhs <- ts.combine(lags(bio_diff,1), lags(ppi_diff,1), lags(us_food_diff,1), lags(d_2005, 1))
+
+
+
+eq.bio <- tsreg(bio_diff, rhs)
+eq.ppi <- tsreg(ppi_diff, rhs)
+eq.us <- tsreg(us_food_diff, rhs)
+eq.can <- tsreg(can_food_diff, rhs)
+
+summary(eq.us)
+
+#The recursion
+
+rec<-function(result, shocks){
+  dbio.next <- -0.001  +   0.06*result["bio_d"] +  0.008*result["ppi_d"] - 0.87*result["us_food_d"] +  0.003*1 + shocks["bio_share"]
+  dppi.next <- -0.002  -   0.03*result["bio_d"] +  0.220*result["ppi_d"] - 0.41*result["us_food_d"] +  0.002*1 + shocks["ppi_corn"]
+  d_us.next <- -0.0002 - 0.0004*result["bio_d"] + 0.0003*result["ppi_d"] - 0.34*result["us_food_d"] + 0.0005*1 + shocks["rcpi_us_food"]
+ 
+  result <- c(dbio.next, dppi.next, d_us.next)
+  names(result) <- c("bio_d", "ppi_d", "us_food_d")
+  return(result)
+  }
+
+# Testing the recursion 
+
+rec(c("bio_d"=4.2, "ppi_d"=2.1, "us_food_d"=5.0), c("bio_share"=15, "ppi_corn"=5, "rcpi_us_food"=4.4 ))
+
+# Handle identification by recursive ordering
+# Biomass share of consumption and ppi do not respond immediately to food prices changes.
+
+res.us.food <- eq.us$resids
+res.ppi <- eq.ppi$resids
+res.bio <- eq.bio$resids
+
+rhs.ordering <- ts.combine((res.ppi), (res.bio))
+
+tsreg(res.us.food, rhs.ordering )
+
+
+# Shocks: biomass +1: vs -1, ppi: 0 and 0, us food prices:0 and 0
+set.seed(100)
+irfs_n <- replicate(1000, {
+  dbio.ps <- sample(us_food_diff, size=1)
+  dppi.ps <- sample(us_food_diff, size=1)
+  d.us.ps <- sample(us_food_diff, size=1)
+  init0 <- c("bio_d"    =-0.001  + 0.06*dbio.ps   + 0.008*dppi.ps -0.87*d.us.ps + 0.003 - 1, 
+             "ppi_d"    =-0.002  + 0.03*dbio.ps   + 0.220*dppi.ps -0.41*d.us.ps + 0.002, 
+             "us_food_d"=-0.0002 - 0.0004*dbio.ps + 0.003*dppi.ps -0.34*d.us.ps + 0.002)
+  init1 <- c("bio_d"    =-0.001  + 0.06*dbio.ps   + 0.008*dppi.ps -0.87*d.us.ps + 0.003 + 1, 
+             "ppi_d"    =-0.002  + 0.03*dbio.ps   + 0.220*dppi.ps -0.41*d.us.ps + 0.002, 
+             "us_food_d"=-0.0002 - 0.0004*dbio.ps + 0.003*dppi.ps -0.34*d.us.ps + 0.002)
+  
+  # Preserve the correlation of residuals across equations
+  ind <- sample(1:length(res.bio), size=12, replace=TRUE)
+  # Create the shocks as a list, so we can use Reduce
+  shocks <- lapply(ind, function(ii) { 
+    result <- c(res.bio[ii], res.ppi[ii],res.us.food[ii])
+    names(result) <- c("bio_share", "ppi_corn","rcpi_us_food")
+    return(result)
+  })
+  pred0 <- Reduce(rec, shocks, init=init0, accumulate=TRUE)
+  pred1 <- Reduce(rec, shocks, init=init1, accumulate=TRUE)
+  # IRF for us
+  irf.dbio <- Map(function(s1, s0) { s1["bio_d"] - s0["bio_d"] }, pred1, pred0)
+  irf.dbio <- unlist(irf.dbio)
+  irf.ppi <- Map(function(s1, s0) { s1["ppi_d"] - s0["ppi_d"] }, pred1, pred0)
+  irf.dppi <- unlist(irf.ppi)
+  irf.us <- Map(function(s1, s0) { s1["us_food_d"] - s0["us_food_d"] }, pred1, pred0)
+  irf.us <- unlist(irf.us)
+  
+  result <- cbind(irf.dbio,irf.dppi, irf.us)
+  colnames(result) <- c("bio_d","ppi_d", "us_food_d")
+  result
+})
+
+# irfs is a 3D array
+# The first two dimensions are one pair of IRFs
+# If you specify only the column, you get that IRF at all horizons and over all replications
+dim(irfs_n[,1,])
+rowMeans(irfs_n[,1,]) # Average of all responses of doil to the shock
+plot(ts(rowMeans(irfs_n[,1,])), main="Response of biomass change to biomass consumption shock")
+plot(ts(rowMeans(irfs_n[,2,])), main="Response of corn PPI to biomass consumption shock")
+ts.plot(ts(rowMeans(irfs_n[,3,])), main="U.S. food prices to biomass shock" , xlab="Months", ylab="");abline(h=0)
+
+
+
+#For the canada then
+
+rhs <- ts.combine(lags(bio_diff,1), lags(ppi_diff,1), lags(can_food_diff,1), lags(d_2005, 1))
+
+
+
+eq.bio <- tsreg(bio_diff, rhs)
+eq.ppi <- tsreg(ppi_diff, rhs)
+eq.us <- tsreg(us_food_diff, rhs)
+eq.can <- tsreg(can_food_diff, rhs)
+
+summary(eq.can)
+
+#The recursion
+
+rec<-function(result, shocks){
+  dbio.next <- -0.001  +     0.03*result["bio_d"] +  0.036*result["ppi_d"] - 0.93*result["can_food_d"] +  0.003*1 + shocks["bio_share"]
+  dppi.next <- -0.002  -     0.03*result["bio_d"] +  0.227*result["ppi_d"] + 0.06*result["can_food_d"] +  0.002*1 + shocks["ppi_corn"]
+  d_can.next <- -0.00008 - 0.0005*result["bio_d"] +  0.015*result["ppi_d"] - 0.22*result["can_food_d"] + 0.0004*1 + shocks["rcpi_can_food"]
+  
+  result <- c(dbio.next, dppi.next, d_can.next)
+  names(result) <- c("bio_d", "ppi_d", "can_food_d")
+  return(result)
+}
+
+# Testing the recursion 
+
+rec(c("bio_d"=4.2, "ppi_d"=2.1, "can_food_d"=5.0), c("bio_share"=15, "ppi_corn"=5, "rcpi_can_food"=4.4 ))
+
+# Handle identification by recursive ordering
+# Biomass share of consumption and ppi do not respond immediately to food prices changes.
+
+res.can.food <- eq.can$resids
+res.ppi <- eq.ppi$resids
+res.bio <- eq.bio$resids
+
+rhs.ordering <- ts.combine((res.ppi), (res.bio))
+
+tsreg(res.can.food, rhs.ordering )
+
+
+
+# Shocks: biomass +10: vs -10, ppi: 0 and 0, us food prices:0 and 0
+set.seed(100)
+irfs_n <- replicate(1000, {
+  dbio.ps <-  sample(can_food_diff, size=1)
+  dppi.ps <-  sample(can_food_diff, size=1)
+  d.can.ps <- sample(can_food_diff, size=1)
+  init0 <- c("bio_d"     =-0.001  + 0.03*dbio.ps   + 0.036*dppi.ps -0.93*d.can.ps + 0.003 - 1, 
+             "ppi_d"     =-0.002  + 0.03*dbio.ps   + 0.227*dppi.ps -0.06*d.can.ps + 0.002, 
+             "can_food_d"=-0.0002 - 0.0005*dbio.ps + 0.015*dppi.ps -0.22*d.can.ps + 0.002)
+  init1 <- c("bio_d"     =-0.001  + 0.03*dbio.ps   + 0.036*dppi.ps -0.93*d.can.ps + 0.003 + 1, 
+             "ppi_d"     =-0.002  + 0.03*dbio.ps   + 0.227*dppi.ps -0.06*d.can.ps + 0.002, 
+             "can_food_d"=-0.0002 - 0.0005*dbio.ps + 0.015*dppi.ps -0.22*d.can.ps + 0.002)
+  
+  # Preserve the correlation of residuals across equations
+  ind <- sample(1:length(res.bio), size=12, replace=TRUE)
+  # Create the shocks as a list, so we can use Reduce
+  shocks <- lapply(ind, function(ii) { 
+    result <- c(res.bio[ii], res.ppi[ii],res.can.food[ii])
+    names(result) <- c("bio_share", "ppi_corn","rcpi_can_food")
+    return(result)
+  })
+  pred0 <- Reduce(rec, shocks, init=init0, accumulate=TRUE)
+  pred1 <- Reduce(rec, shocks, init=init1, accumulate=TRUE)
+  # IRF for can
+  irf.dbio <- Map(function(s1, s0) { s1["bio_d"] - s0["bio_d"] }, pred1, pred0)
+  irf.dbio <- unlist(irf.dbio)
+  irf.ppi <- Map(function(s1, s0) { s1["ppi_d"] - s0["ppi_d"] }, pred1, pred0)
+  irf.dppi <- unlist(irf.ppi)
+  irf.can <- Map(function(s1, s0) { s1["can_food_d"] - s0["can_food_d"] }, pred1, pred0)
+  irf.can <- unlist(irf.can)
+  
+  result <- cbind(irf.dbio,irf.dppi, irf.can)
+  colnames(result) <- c("bio_d","ppi_d", "can_food_d")
+  result
+})
+
+# irfs is a 3D array
+# The first two dimensions are one pair of IRFs
+# If you specify only the column, you get that IRF at all horizons and over all replications
+dim(irfs_n[,1,])
+rowMeans(irfs_n[,1,]) # Average of all responses of doil to the shock
+plot(ts(rowMeans(irfs_n[,1,])), main="Response of biomass change to biomass consumption shock")
+plot(ts(rowMeans(irfs_n[,2,])), main="Response of corn PPI to biomass consumption shock")
+ts.plot(ts(rowMeans(irfs_n[,3,])), main="Canada food prices to biomass shock" , xlab="Months", ylab="");abline(h=0)
+
+
+
+
+
+#####Approach 2
+
+data<- read.csv("data_project_910.csv", header = TRUE)
+data <- ts(data, start=c(1975,1), frequency=12)
+data <- 100*diff(log(data))
+
+#Creating the three types of analysis ( all, before 2006, after 2006 )
+
+#all
+
+data_old <- window(data, end = c(2005,5))
+data_new <- window(data, start = c(2005,6))
+
+colnames(data_new)
+
+############################ Response  to Biomass ################################
+vardata <- na.omit(ts.intersect(data_old[,c( "biomassshare" ,"ppi_corn_us" ,"rcpi_us_food")]))
+colnames(vardata) <- c("RENEW","PPI","FOOD")
+
+fit <- VAR(vardata, ic="AIC", lag.max = 12)
+fevd1 <- fevd(fit, n.ahead=36)
+res_food <- irf(fit, impulse="RENEW", response="FOOD",n.ahead=24, runs=100, ci = 0.90, cumulative=TRUE)
+
+
+ts.plot(cbind(res_food$Lower$RENEW,res_food$irf$RENEW,res_food$Upper$RENEW),xlab="Months", ylab="",
+        main="Biomass on Canada Food Before 2005 ",lwd=c(2,2,2), lty=c(2,1,2),ylim=c(-0.6,0.8));abline(h=0)
+
+############################ Response  to Biomass ################################
+vardata <- na.omit(ts.intersect(data_new[,c( "biomassshare" ,"ppi_corn_us" ,"rcpi_us_food")]))
+colnames(vardata) <- c("RENEW","PPI","FOOD")
+
+fit <- VAR(vardata, ic="AIC", lag.max = 12)
+fevd1 <- fevd(fit, n.ahead=36)
+res_food <- irf(fit, impulse="RENEW", response="FOOD",n.ahead=24, runs=100, ci = 0.90, cumulative=TRUE)
+
+
+ts.plot(cbind(res_food$Lower$RENEW,res_food$irf$RENEW,res_food$Upper$RENEW),xlab="Months", ylab="",
+        main="Biomass on Canada Food After 2005 ",lwd=c(2,2,2), lty=c(2,1,2),ylim=c(-0.6,0.8));abline(h=0)
